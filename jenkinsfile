@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_HUB_CRED = 'docker-hub-credentials-id' 
+        KUBE_CONFIG_CRED = 'kubeconfig-credentials-id'
+        IMAGE_NAME = 'DOCKERHUB_USERNAME/food-portal'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build & Test Locally') {
+            steps {
+                echo 'Validating source code files...'
+                sh 'test -f index.html'
+                sh 'test -f Dockerfile'
+                
+                echo 'Simulating Local Container Build and Check...'
+                sh "docker build -t ${IMAGE_NAME}:local ."
+            }
+        }
+
+        // Pipeline Strategy 1: Archive Build Artifacts
+        stage('Archive Artifacts') {
+            steps {
+                archiveArtifacts artifacts: 'index.html, deployment.yaml', fingerprint: true
+            }
+        }
+
+        // Pipeline Strategy 2: Conditional Stage Execution (Only build/push on main branch)
+        stage('Push Image to Docker Hub') {
+            when {
+                branch 'main'
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_HUB_CRED}", usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh "echo ${PASS} | docker login -u ${USER} --password-stdin"
+                    sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                    sh "docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest"
+                    sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
+                    sh "docker push ${IMAGE_NAME}:latest"
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([file(credentialsId: "${KUBE_CONFIG_CRED}", variable: 'KUBECONFIG')]) {
+                    echo "Updating deployment manifest with the current image tag..."
+                    sh "sed -i 's|DOCKERHUB_USERNAME/food-portal:latest|${IMAGE_NAME}:${IMAGE_TAG}|g' deployment.yaml"
+                    
+                    echo "Applying deployment to Kubernetes Desktop Cluster..."
+                    sh "kubectl apply -f deployment.yaml --kubeconfig=${KUBECONFIG}"
+                    
+                    echo "Verifying Rollout Status..."
+                    sh "kubectl rollout status deployment/food-portal-deployment --timeout=60s --kubeconfig=${KUBECONFIG}"
+                }
+            }
+        }
+    }
+    post {
+        always {
+            sh "docker rmi \$(docker images '${IMAGE_NAME}' -a -q) --force || true"
+        }
+    }
+}
