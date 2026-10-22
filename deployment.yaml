@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
       - name: food-portal
-        image: yogaprasath77/food-portal:latest
+        image: yogaprasath77/food-portal:v2
         imagePullPolicy: Always
         ports:
         - containerPort: 80
